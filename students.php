@@ -133,6 +133,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Fetch student accounts
 $listStmt = $db->query("SELECT id, username, email, gender, role FROM users WHERE role = 'student' ORDER BY id DESC");
 $students = $listStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Fetch student profile data from students table
+// Build label indices for joins
+$courseIndex = [];
+$sessionIndex = [];
+$batchIndex = [];
+$timingIndex = [];
+try {
+    foreach ($db->query('SELECT id, name FROM courses ORDER BY name ASC')->fetchAll(PDO::FETCH_ASSOC) as $r) { $courseIndex[(string)$r['id']] = (string)$r['name']; }
+} catch (Throwable $e) { /* ignore */ }
+try {
+    foreach ($db->query('SELECT id, name FROM academic_sessions ORDER BY start_date DESC')->fetchAll(PDO::FETCH_ASSOC) as $r) { $sessionIndex[(string)$r['id']] = (string)$r['name']; }
+} catch (Throwable $e) { /* ignore */ }
+try {
+    foreach ($db->query('SELECT id, name FROM batches ORDER BY name ASC')->fetchAll(PDO::FETCH_ASSOC) as $r) { $batchIndex[(string)$r['id']] = (string)$r['name']; }
+} catch (Throwable $e) { /* ignore */ }
+try {
+    foreach ($db->query('SELECT id, day_of_week, start_time, end_time, name FROM timings ORDER BY FIELD(day_of_week, "Daily","Mon","Tue","Wed","Thu","Fri","Sat","Sun"), start_time ASC')->fetchAll(PDO::FETCH_ASSOC) as $t) {
+        $label = ($t['name'] ? $t['name'].' - ' : '') . $t['day_of_week'] . ' ' . $t['start_time'] . '–' . $t['end_time'];
+        $timingIndex[(string)$t['id']] = $label;
+    }
+} catch (Throwable $e) { /* ignore */ }
+
+$profiles = $db->query('SELECT id, registration_number, fullname, gender, contact_personal, guardian_name, qualification, course_id, academic_session_id, batch_id, timing_id, admission_date, general_number, picture_path, created_at FROM students ORDER BY created_at DESC')->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!doctype html>
 <html lang="en">
@@ -142,9 +166,7 @@ $students = $listStmt->fetchAll(PDO::FETCH_ASSOC);
     <title>Student Accounts</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #f8f9fa; }
-    </style>
+    <link href="assets/css/design-system.css" rel="stylesheet">
 </head>
 <body>
 <?php include_once __DIR__ . '/partials/command_palette.php'; ?>
@@ -153,7 +175,10 @@ $students = $listStmt->fetchAll(PDO::FETCH_ASSOC);
 <div class="container-fluid mt-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h1 class="h3">Student Accounts</h1>
-        <a href="dashboard.php" class="btn btn-outline-secondary">Back to Dashboard</a>
+        <div class="d-flex gap-2">
+          <a href="add_student.php" class="btn btn-primary"><i class="fa-solid fa-user-plus me-1"></i>Add Student</a>
+          <a href="dashboard.php" class="btn btn-outline-secondary">Back to Dashboard</a>
+        </div>
     </div>
 
     <?php if (!empty($errors)): ?>
@@ -167,48 +192,12 @@ $students = $listStmt->fetchAll(PDO::FETCH_ASSOC);
         <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
     <?php endif; ?>
 
-    <div class="card mb-4">
-        <div class="card-header">Create Student Account</div>
-        <div class="card-body">
-            <form method="post" id="studentCreateForm">
-                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(csrfToken()); ?>">
-                <input type="hidden" name="action" value="create">
-                <div class="row g-3">
-                    <div class="col-md-4">
-                        <label class="form-label">CNIC</label>
-                        <input type="text" name="cnic" class="form-control" required placeholder="e.g. 12345-1234567-1" pattern="^[0-9]{5}-[0-9]{7}-[0-9]$" title="Format: 12345-1234567-1">
-                        <div class="form-text">This will be used as the student's username.</div>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Email (optional)</label>
-                        <input type="email" name="email" class="form-control" placeholder="student@example.com">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Gender</label>
-                        <select name="gender" class="form-select">
-                            <option value="">Not specified</option>
-                            <option value="male">Male</option>
-                            <option value="female">Female</option>
-                            <option value="other">Other</option>
-                        </select>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Role</label>
-                        <input type="text" class="form-control" value="student" disabled>
-                        <div class="form-text">Default password is <code>Sostti123+</code>. Student must change it on first login.</div>
-                    </div>
-                </div>
-                <div class="mt-3">
-                    <button class="btn btn-primary" type="submit">Create</button>
-                </div>
-            </form>
-        </div>
-    </div>
+    
 
-    <div class="card">
+    <div class="card mb-4">
         <div class="card-header">
             <div class="d-flex justify-content-between align-items-center">
-                <span>Student List</span>
+                <span>Student Accounts</span>
                 <input type="text" id="studentFilter" class="form-control form-control-sm" placeholder="Search (username, email)">
             </div>
         </div>
@@ -260,8 +249,117 @@ $students = $listStmt->fetchAll(PDO::FETCH_ASSOC);
                         </tr>
                     <?php endforeach; ?>
                     <?php if (empty($students)): ?>
-                        <tr><td colspan="4" class="text-center text-muted">No student accounts found.</td></tr>
+                        <tr><td colspan="6" class="text-center text-muted">No student accounts found.</td></tr>
                     <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- View Student Modal -->
+    <div class="modal fade" id="viewStudentModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="fa-solid fa-user me-2"></i>Student Profile</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-3">
+              <div class="col-md-6"><strong>Reg No:</strong> <span id="vReg"></span></div>
+              <div class="col-md-6"><strong>GR No:</strong> <span id="vGr"></span></div>
+              <div class="col-md-6"><strong>Name:</strong> <span id="vName"></span></div>
+              <div class="col-md-6"><strong>Gender:</strong> <span id="vGender"></span></div>
+              <div class="col-md-6"><strong>Course:</strong> <span id="vCourse"></span></div>
+              <div class="col-md-6"><strong>Session:</strong> <span id="vSession"></span></div>
+              <div class="col-md-6"><strong>Batch:</strong> <span id="vBatch"></span></div>
+              <div class="col-md-6"><strong>Timing:</strong> <span id="vTiming"></span></div>
+              <div class="col-md-6"><strong>Contact:</strong> <span id="vContact"></span></div>
+              <div class="col-md-6"><strong>Guardian:</strong> <span id="vGuardian"></span></div>
+              <div class="col-md-6"><strong>Admission Date:</strong> <span id="vAdmission"></span></div>
+              <div class="col-md-6"><strong>Qualification:</strong> <span id="vQualification"></span></div>
+              <div class="col-md-12 text-muted"><small>Created: <span id="vCreated"></span></small></div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            <a id="vUpdateLink" class="btn btn-primary" href="#"><i class="fa-solid fa-pen"></i> Update</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <div class="d-flex justify-content-between align-items-center">
+                <span>Student Data</span>
+                <input type="text" id="profileFilter" class="form-control form-control-sm" placeholder="Search (reg no, name, course, batch)">
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-bordered align-middle">
+                    <thead>
+                        <tr>
+                            <th>Reg No</th>
+                            <th>Name</th>
+                            <th>Gender</th>
+                            <th>Course</th>
+                            <th>Session</th>
+                            <th>Batch</th>
+                            <th>Timing</th>
+                            <th>Contact</th>
+                            <th>Guardian</th>
+                            <th>Admission</th>
+                            <th>GR No</th>
+                            <th style="width:160px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="profilesTbody">
+                        <?php foreach ($profiles as $p): ?>
+                            <?php
+                              $courseLabel = $courseIndex[(string)($p['course_id'] ?? '')] ?? '';
+                              $sessionLabel = $sessionIndex[(string)($p['academic_session_id'] ?? '')] ?? '';
+                              $batchLabel = $batchIndex[(string)($p['batch_id'] ?? '')] ?? '';
+                              $timingLabel = $timingIndex[(string)($p['timing_id'] ?? '')] ?? '';
+                            ?>
+                            <tr
+                              data-id="<?php echo (int)$p['id']; ?>"
+                              data-registration-number="<?php echo htmlspecialchars($p['registration_number'] ?? ''); ?>"
+                              data-fullname="<?php echo htmlspecialchars($p['fullname'] ?? ''); ?>"
+                              data-gender="<?php echo htmlspecialchars($p['gender'] ?? ''); ?>"
+                              data-course="<?php echo htmlspecialchars($courseLabel); ?>"
+                              data-session="<?php echo htmlspecialchars($sessionLabel); ?>"
+                              data-batch="<?php echo htmlspecialchars($batchLabel); ?>"
+                              data-timing="<?php echo htmlspecialchars($timingLabel); ?>"
+                              data-contact="<?php echo htmlspecialchars($p['contact_personal'] ?? ''); ?>"
+                              data-guardian="<?php echo htmlspecialchars($p['guardian_name'] ?? ''); ?>"
+                              data-admission="<?php echo htmlspecialchars($p['admission_date'] ?? ''); ?>"
+                              data-grno="<?php echo htmlspecialchars($p['general_number'] ?? ''); ?>"
+                              data-qualification="<?php echo htmlspecialchars($p['qualification'] ?? ''); ?>"
+                              data-created="<?php echo htmlspecialchars($p['created_at'] ?? ''); ?>"
+                            >
+                                <td><?php echo htmlspecialchars($p['registration_number'] ?? ''); ?></td>
+                                <td><?php echo htmlspecialchars($p['fullname'] ?? ''); ?></td>
+                                <td><?php echo htmlspecialchars($p['gender'] ?? ''); ?></td>
+                                <td><?php echo htmlspecialchars($courseLabel); ?></td>
+                                <td><?php echo htmlspecialchars($sessionLabel); ?></td>
+                                <td><?php echo htmlspecialchars($batchLabel); ?></td>
+                                <td><?php echo htmlspecialchars($timingLabel); ?></td>
+                                <td><?php echo htmlspecialchars($p['contact_personal'] ?? ''); ?></td>
+                                <td><?php echo htmlspecialchars($p['guardian_name'] ?? ''); ?></td>
+                                <td><?php echo htmlspecialchars($p['admission_date'] ?? ''); ?></td>
+                                <td><?php echo htmlspecialchars($p['general_number'] ?? ''); ?></td>
+                                <td class="text-nowrap">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary open-view-profile"><i class="fa-solid fa-eye"></i> View</button>
+                                    <a class="btn btn-sm btn-outline-primary" href="add_student.php?edit_id=<?php echo (int)$p['id']; ?>"><i class="fa-solid fa-pen"></i> Update</a>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        <?php if (empty($profiles)): ?>
+                            <tr><td colspan="11" class="text-center text-muted">No student data found.</td></tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -285,41 +383,55 @@ $students = $listStmt->fetchAll(PDO::FETCH_ASSOC);
   }
   q.addEventListener('input', apply);
 })();
-</script>
-<script>
-// AJAX create for student accounts
+
+// Client-side filter for Student Data profiles table
 (() => {
-  const form = document.getElementById('studentCreateForm');
-  const tbody = document.querySelector('table tbody');
-  if (!form || !tbody) return;
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const fd = new FormData(form);
-    fd.append('ajax', '1');
-    try {
-      const res = await fetch('students.php', { method: 'POST', headers: { 'Accept': 'application/json' }, body: fd });
-      const json = await res.json();
-      if (json.csrf_token) {
-        const tokenInputs = document.querySelectorAll('input[name="csrf_token"]');
-        tokenInputs.forEach(i => i.value = json.csrf_token);
-      }
-      if (json.success) {
-        // Append new row to the list
-        const d = json.data;
-        if (d) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${d.id}</td><td>${d.username}</td><td>${d.email ?? ''}</td><td>${d.username}</td>`;
-          tbody.prepend(tr);
-        }
-        form.reset();
-      } else {
-        alert(json.message || 'Failed to create student');
-      }
-    } catch (err) {
-      alert('Network error while creating student');
-    }
+  const q = document.getElementById('profileFilter');
+  const tbody = document.getElementById('profilesTbody');
+  if (!q || !tbody) return;
+  function apply() {
+    const term = q.value.trim().toLowerCase();
+    [...tbody.rows].forEach(row => {
+      const text = row.textContent.toLowerCase();
+      row.style.display = term === '' || text.includes(term) ? '' : 'none';
+    });
+  }
+  q.addEventListener('input', apply);
+})();
+
+// View modal population
+(() => {
+  const modalEl = document.getElementById('viewStudentModal');
+  if (!modalEl) return;
+  const modal = new bootstrap.Modal(modalEl);
+  const tbody = document.getElementById('profilesTbody');
+  if (!tbody) return;
+  tbody.addEventListener('click', (e) => {
+    const btn = e.target.closest('.open-view-profile');
+    if (!btn) return;
+    const tr = btn.closest('tr');
+    if (!tr) return;
+    const get = (k) => tr.dataset[k] || '';
+    document.getElementById('vReg').textContent = get('registrationNumber');
+    document.getElementById('vGr').textContent = get('grno');
+    document.getElementById('vName').textContent = get('fullname');
+    document.getElementById('vGender').textContent = get('gender');
+    document.getElementById('vCourse').textContent = get('course');
+    document.getElementById('vSession').textContent = get('session');
+    document.getElementById('vBatch').textContent = get('batch');
+    document.getElementById('vTiming').textContent = get('timing');
+    document.getElementById('vContact').textContent = get('contact');
+    document.getElementById('vGuardian').textContent = get('guardian');
+    document.getElementById('vAdmission').textContent = get('admission');
+    document.getElementById('vQualification').textContent = get('qualification');
+    document.getElementById('vCreated').textContent = get('created');
+    const id = tr.dataset.id || '';
+    const updateLink = document.getElementById('vUpdateLink');
+    updateLink.href = 'add_student.php?edit_id=' + encodeURIComponent(id);
+    modal.show();
   });
 })();
 </script>
+ 
 </body>
 </html>

@@ -58,6 +58,8 @@ try { $db->exec("ALTER TABLE students ADD COLUMN academic_session_id INT NOT NUL
 try { $db->exec("ALTER TABLE students ADD COLUMN batch_id INT NOT NULL AFTER academic_session_id"); } catch (Throwable $e) { /* ignore if exists */ }
 try { $db->exec("ALTER TABLE students ADD INDEX idx_academic_session_id (academic_session_id)"); } catch (Throwable $e) { /* ignore if exists */ }
 try { $db->exec("ALTER TABLE students ADD INDEX idx_batch_id (batch_id)"); } catch (Throwable $e) { /* ignore if exists */ }
+// Ensure admission_date column exists to track date of admission
+try { $db->exec("ALTER TABLE students ADD COLUMN admission_date DATE NULL AFTER general_number"); } catch (Throwable $e) { /* ignore if exists */ }
 // Add trigger to prevent deleting GR No (general_number) once set
 try {
   $db->exec("DROP TRIGGER IF EXISTS trg_students_general_number_protect");
@@ -89,6 +91,7 @@ $old = [
   'remaining_fee' => '',
   'receipt_number' => '',
   'captured_image' => ''
+  , 'admission_date' => ''
 ];
 
 // Fetch dropdown data
@@ -96,7 +99,73 @@ $courses = $db->query('SELECT id, name FROM courses ORDER BY name ASC')->fetchAl
 $timings = $db->query('SELECT id, name, day_of_week, start_time, end_time FROM timings ORDER BY FIELD(day_of_week, "Daily","Mon","Tue","Wed","Thu","Fri","Sat","Sun"), start_time ASC')->fetchAll(PDO::FETCH_ASSOC);
 // Active academic sessions and all batches (batches link to sessions)
 $academicSessions = $db->query('SELECT id, name FROM academic_sessions WHERE status = "active" ORDER BY start_date DESC')->fetchAll(PDO::FETCH_ASSOC);
-$batches = $db->query('SELECT id, name, academic_session_id FROM batches ORDER BY name ASC')->fetchAll(PDO::FETCH_ASSOC);
+// Fetch batches including course_id if available (fallback for legacy schemas)
+$batches = [];
+try {
+    $batches = $db->query('SELECT id, name, academic_session_id, timing_id, course_id FROM batches ORDER BY name ASC')->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    $batches = $db->query('SELECT id, name, academic_session_id, timing_id FROM batches ORDER BY name ASC')->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($batches as &$b) { $b['course_id'] = null; }
+unset($b);
+}
+
+// Build batch->timing IDs map (from junction table) for client-side filtering
+$batchTimingIds = [];
+$batchCourseIndex = [];
+try {
+    $batchIds = array_column($batches, 'id');
+    if (!empty($batchIds)) {
+        $in = implode(',', array_map('intval', $batchIds));
+        $rs = $db->query("SELECT bt.batch_id, bt.timing_id FROM batch_timings bt WHERE bt.batch_id IN ($in)");
+        foreach ($rs->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $bid = (int)$row['batch_id'];
+            $tid = (int)$row['timing_id'];
+            if (!isset($batchTimingIds[$bid])) { $batchTimingIds[$bid] = []; }
+            $batchTimingIds[$bid][] = $tid;
+        }
+        // Build batch->course index
+        foreach ($batches as $row) {
+            $bid = (int)$row['id'];
+            $cid = isset($row['course_id']) ? (int)$row['course_id'] : 0;
+            if ($cid > 0) { $batchCourseIndex[$bid] = $cid; }
+        }
+    }
+} catch (Throwable $e) { /* junction table may not exist; ignore */ }
+
+// If editing, prefill form with existing student data
+$isEdit = false;
+$editId = (int)($_GET['edit_id'] ?? 0);
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && $editId > 0) {
+    $stmt = $db->prepare('SELECT id, registration_number, course_id, timing_id, academic_session_id, batch_id, fullname, dob, gender, place_of_birth, contact_personal, contact_parent, cnic, address, guardian_name, guardian_type, last_school, qualification, total_fee, submitted_fee, remaining_fee, receipt_number, general_number, admission_date, picture_path FROM students WHERE id = ?');
+    $stmt->execute([$editId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+        $isEdit = true;
+        $old['registration_number'] = (string)($row['registration_number'] ?? '');
+        $old['course_id'] = (string)($row['course_id'] ?? '');
+        $old['timing_id'] = (string)($row['timing_id'] ?? '');
+        $old['academic_session_id'] = (string)($row['academic_session_id'] ?? '');
+        $old['batch_id'] = (string)($row['batch_id'] ?? '');
+        $old['fullname'] = (string)($row['fullname'] ?? '');
+        $old['dob'] = (string)($row['dob'] ?? '');
+        $old['gender'] = (string)($row['gender'] ?? '');
+        $old['place_of_birth'] = (string)($row['place_of_birth'] ?? 'Karachi');
+        $old['contact_personal'] = (string)($row['contact_personal'] ?? '');
+        $old['contact_parent'] = (string)($row['contact_parent'] ?? '');
+        $old['cnic'] = (string)($row['cnic'] ?? '');
+        $old['address'] = (string)($row['address'] ?? '');
+        $old['guardian_name'] = (string)($row['guardian_name'] ?? '');
+        $old['guardian_type'] = (string)($row['guardian_type'] ?? '');
+        $old['last_school'] = (string)($row['last_school'] ?? '');
+        $old['qualification'] = (string)($row['qualification'] ?? '');
+        $old['total_fee'] = (string)($row['total_fee'] ?? '');
+        $old['submitted_fee'] = (string)($row['submitted_fee'] ?? '');
+        $old['remaining_fee'] = (string)($row['remaining_fee'] ?? '');
+        $old['receipt_number'] = (string)($row['receipt_number'] ?? '');
+        $old['admission_date'] = (string)($row['admission_date'] ?? '');
+        // picture_path is stored separately; keep captured_image empty by default
+    }
+}
 
 function computeAge(string $dob): int {
     try {
@@ -104,6 +173,16 @@ function computeAge(string $dob): int {
         $n = new DateTime('today');
         return (int)$n->diff($b)->y;
     } catch (Throwable $e) { return -1; }
+}
+
+// Generate next registration number for a course on today's date
+function nextRegistrationNumber(PDO $db, int $course_id): string {
+    $today = date('Y-m-d');
+    $dateTag = date('Ymd');
+    $seqStmt = $db->prepare('SELECT COUNT(*) FROM students WHERE course_id = ? AND DATE(created_at) = ?');
+    $seqStmt->execute([$course_id, $today]);
+    $seq = ((int)$seqStmt->fetchColumn()) + 1;
+    return $course_id . '-' . $dateTag . '-' . $seq;
 }
 
 // CSRF helpers consistent with other modules
@@ -162,6 +241,15 @@ function saveImageFromUploadOrCapture(array $file, ?string $capturedDataUrl): ?s
     return null;
 }
 
+// Lightweight API for previewing the next registration number
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && ($_GET['action'] ?? '') === 'next_registration') {
+    header('Content-Type: application/json');
+    $course_id = (int)($_GET['course_id'] ?? 0);
+    if ($course_id <= 0) { echo json_encode(['error' => 'course_id required']); exit; }
+    echo json_encode(['registration_number' => nextRegistrationNumber($db, $course_id)]);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $token = $_POST['csrf_token'] ?? '';
@@ -169,6 +257,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Invalid CSRF token.';
     } elseif ($action === 'create') {
         $registration_number = trim($_POST['registration_number'] ?? '');
+        // Auto-set admission date to today; field is disabled in UI
+        $admission_date = date('Y-m-d');
         $course_id = (int)($_POST['course_id'] ?? 0);
         $timing_id = (int)($_POST['timing_id'] ?? 0);
         $academic_session_id = (int)($_POST['academic_session_id'] ?? 0);
@@ -191,6 +281,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $captured_data = $_POST['captured_image'] ?? null;
         $picture_path = saveImageFromUploadOrCapture($_FILES['picture'] ?? [], $captured_data);
 
+        // Auto-generate registration number based on course and today's date
+        if ($course_id > 0) {
+            $registration_number = nextRegistrationNumber($db, $course_id);
+            $old['registration_number'] = $registration_number;
+        } else {
+            $registration_number = '';
+            $old['registration_number'] = '';
+        }
+
+        // Admission date already set to today server-side
+
         // Preserve entered values for re-render on errors
         $old['course_id'] = $course_id > 0 ? (string)$course_id : '';
         $old['timing_id'] = $timing_id > 0 ? (string)$timing_id : '';
@@ -212,9 +313,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $old['submitted_fee'] = ($submitted_fee >= 0 ? (string)$submitted_fee : '');
         $old['receipt_number'] = $receipt_number;
         $old['captured_image'] = is_string($captured_data) ? $captured_data : '';
+        $old['admission_date'] = $admission_date;
 
         // Persist entered values for re-render
         $old['registration_number'] = $registration_number;
+        $old['admission_date'] = $admission_date;
         $old['course_id'] = $course_id > 0 ? (string)$course_id : '';
         $old['timing_id'] = $timing_id > 0 ? (string)$timing_id : '';
         $old['academic_session_id'] = $academic_session_id > 0 ? (string)$academic_session_id : '';
@@ -246,9 +349,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($guardian_name === '') { $errors[] = 'Father/Guardian name is required.'; }
         if (!in_array($guardian_type, ['father','guardian'], true)) { $errors[] = 'Select whether name is Father or Guardian.'; }
         if (!in_array($qualification, ['Nill','Middle','Matric','Inter','Graduation','Masters'], true)) { $errors[] = 'Qualification is invalid.'; }
+        // Admission date is system-set; format guaranteed
         if ($picture_path === null) { $errors[] = 'Picture is required (capture or upload).'; }
+
+        // Ensure selected timing belongs to the chosen batch
+        if ($batch_id > 0 && $timing_id > 0) {
+            $assocCount = 0;
+            try {
+                $q = $db->prepare('SELECT COUNT(*) FROM batch_timings WHERE batch_id = ?');
+                $q->execute([$batch_id]);
+                $assocCount = (int)$q->fetchColumn();
+            } catch (Throwable $e) {
+                $assocCount = 0; // junction table may not exist
+            }
+            if ($assocCount > 0) {
+                $chk = $db->prepare('SELECT COUNT(*) FROM batch_timings WHERE batch_id = ? AND timing_id = ?');
+                $chk->execute([$batch_id, $timing_id]);
+                if ((int)$chk->fetchColumn() === 0) {
+                    $errors[] = 'Selected timing is not allowed for the chosen batch.';
+                }
+            } else {
+                // Fallback to legacy single timing on batches
+                $st = $db->prepare('SELECT timing_id FROM batches WHERE id = ?');
+                $st->execute([$batch_id]);
+                $legacyTid = (int)$st->fetchColumn();
+                if ($legacyTid > 0 && $legacyTid !== $timing_id) {
+                    $errors[] = 'Selected timing does not match the batch timing.';
+                }
+            }
+        }
+        // Ensure selected batch belongs to the chosen course (if schema supports it)
+        if ($batch_id > 0 && $course_id > 0) {
+            try {
+                $stc = $db->prepare('SELECT course_id FROM batches WHERE id = ?');
+                $stc->execute([$batch_id]);
+                $batchCourseId = (int)$stc->fetchColumn();
+                if ($batchCourseId > 0 && $batchCourseId !== $course_id) {
+                    $errors[] = 'Selected batch does not belong to the chosen course.';
+                }
+            } catch (Throwable $e) { /* legacy schema may not have course_id; skip */ }
+        }
         if ($total_fee <= 0) { $errors[] = 'Total fee is required.'; }
         if ($submitted_fee < 0) { $errors[] = 'Submitted fee must be non-negative.'; }
+        if ($submitted_fee > 0 && $receipt_number === '') { $errors[] = 'Receipt number is required when a fee is submitted.'; }
+        if ($receipt_number !== '' && $submitted_fee <= 0) { $errors[] = 'Submitted fee must be greater than 0 when a receipt number is provided.'; }
+        if ($submitted_fee > $total_fee) { $errors[] = 'Submitted fee cannot exceed total fee.'; }
         $remaining_fee = max(0.0, round($total_fee - $submitted_fee, 2));
         $old['total_fee'] = ($total_fee > 0 ? (string)$total_fee : '');
         $old['submitted_fee'] = ($submitted_fee >= 0 ? (string)$submitted_fee : '');
@@ -267,10 +412,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $old['remaining_fee'] = (string)$remaining_fee;
 
-        // Generate general number only if receipt number present
+        // Generate general number for admission (independent of receipt/payment)
         $general_number = null;
-        if ($receipt_number !== '') {
-            // Upsert general number from settings
+        {
             $row = $db->prepare('SELECT value FROM settings WHERE `key` = ?');
             $row->execute(['general_number_next']);
             $val = $row->fetch(PDO::FETCH_ASSOC);
@@ -285,7 +429,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if (empty($errors)) {
-            $stmt = $db->prepare('INSERT INTO students (registration_number, user_id, picture_path, course_id, timing_id, academic_session_id, batch_id, fullname, dob, gender, place_of_birth, contact_personal, contact_parent, cnic, address, guardian_name, guardian_type, last_school, qualification, total_fee, submitted_fee, remaining_fee, receipt_number, general_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+            $stmt = $db->prepare('INSERT INTO students (registration_number, user_id, picture_path, course_id, timing_id, academic_session_id, batch_id, fullname, dob, gender, place_of_birth, contact_personal, contact_parent, cnic, address, guardian_name, guardian_type, last_school, qualification, total_fee, submitted_fee, remaining_fee, receipt_number, general_number, admission_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
             $ok = $stmt->execute([
                 $registration_number !== '' ? $registration_number : null,
                 null, $picture_path, $course_id, $timing_id, $academic_session_id, $batch_id, $fullname, $dob, $gender, $place_of_birth,
@@ -293,15 +437,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $guardian_name, $guardian_type, ($last_school !== '' ? $last_school : null), $qualification,
                 $total_fee, $submitted_fee, $remaining_fee,
                 ($receipt_number !== '' ? $receipt_number : null), $general_number,
+                $admission_date,
                 date('Y-m-d H:i:s')
             ]);
             if ($ok) {
                 $newId = (int)$db->lastInsertId();
                 $success = 'Student added successfully.';
-                $created = ['id' => $newId, 'registration_number' => $registration_number, 'fullname' => $fullname, 'course_id' => $course_id, 'timing_id' => $timing_id, 'general_number' => $general_number];
+                $created = ['id' => $newId, 'registration_number' => $registration_number, 'fullname' => $fullname, 'course_id' => $course_id, 'timing_id' => $timing_id, 'general_number' => $general_number, 'admission_date' => $admission_date];
                 // Reset form on success
                 $old = [
-                  'registration_number' => '', 'course_id' => '', 'timing_id' => '', 'academic_session_id' => '', 'batch_id' => '', 'fullname' => '', 'dob' => '', 'gender' => '', 'place_of_birth' => 'Karachi',
+                  'registration_number' => '', 'admission_date' => '', 'course_id' => '', 'timing_id' => '', 'academic_session_id' => '', 'batch_id' => '', 'fullname' => '', 'dob' => '', 'gender' => '', 'place_of_birth' => 'Karachi',
                   'contact_personal' => '', 'contact_parent' => '', 'cnic' => '', 'address' => '', 'guardian_name' => '', 'guardian_type' => '',
                   'last_school' => '', 'qualification' => '', 'total_fee' => '', 'submitted_fee' => '', 'remaining_fee' => '', 'receipt_number' => '', 'captured_image' => ''
                 ];
@@ -321,6 +466,105 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
             exit();
         }
+    } elseif ($action === 'update') {
+        $edit_id = (int)($_POST['edit_id'] ?? 0);
+        if ($edit_id <= 0) {
+            $errors[] = 'Missing edit ID.';
+        } else {
+            // Load existing immutable fields
+            $cur = $db->prepare('SELECT registration_number, general_number, admission_date, picture_path FROM students WHERE id = ?');
+            $cur->execute([$edit_id]);
+            $curRow = $cur->fetch(PDO::FETCH_ASSOC);
+            if (!$curRow) {
+                $errors[] = 'Student not found.';
+            } else {
+                // Collect updated fields
+                $course_id = (int)($_POST['course_id'] ?? 0);
+                $timing_id = (int)($_POST['timing_id'] ?? 0);
+                $academic_session_id = (int)($_POST['academic_session_id'] ?? 0);
+                $batch_id = (int)($_POST['batch_id'] ?? 0);
+                $fullname = trim($_POST['fullname'] ?? '');
+                $dob = trim($_POST['dob'] ?? '');
+                $gender = trim(strtolower($_POST['gender'] ?? ''));
+                $place_of_birth = trim($_POST['place_of_birth'] ?? 'Karachi');
+                $contact_personal = trim($_POST['contact_personal'] ?? '');
+                $contact_parent = trim($_POST['contact_parent'] ?? '');
+                $cnic = trim($_POST['cnic'] ?? '');
+                $address = trim($_POST['address'] ?? '');
+                $guardian_name = trim($_POST['guardian_name'] ?? '');
+                $guardian_type = trim(strtolower($_POST['guardian_type'] ?? ''));
+                $last_school = trim($_POST['last_school'] ?? '');
+                $qualification = trim($_POST['qualification'] ?? '');
+                $total_fee = (float)($_POST['total_fee'] ?? 0);
+                $submitted_fee = (float)($_POST['submitted_fee'] ?? 0);
+                $remaining_fee = max(0.0, $total_fee - $submitted_fee);
+                $receipt_number = trim($_POST['receipt_number'] ?? '');
+
+                // Basic validations
+                if ($fullname === '') { $errors[] = 'Fullname is required.'; }
+                if ($contact_personal === '') { $errors[] = 'Personal contact is required.'; }
+                if ($guardian_name === '') { $errors[] = 'Father/Guardian name is required.'; }
+                if ($total_fee <= 0) { $errors[] = 'Total fee is required.'; }
+                if ($submitted_fee < 0) { $errors[] = 'Submitted fee must be non-negative.'; }
+                if ($submitted_fee > 0 && $receipt_number === '') { $errors[] = 'Receipt number is required when a fee is submitted.'; }
+                if ($receipt_number !== '' && $submitted_fee <= 0) { $errors[] = 'Submitted fee must be greater than 0 when a receipt number is provided.'; }
+                if ($submitted_fee > $total_fee) { $errors[] = 'Submitted fee cannot exceed total fee.'; }
+
+                // Preserve entered values in $old
+                $old['course_id'] = $course_id > 0 ? (string)$course_id : '';
+                $old['timing_id'] = $timing_id > 0 ? (string)$timing_id : '';
+                $old['academic_session_id'] = $academic_session_id > 0 ? (string)$academic_session_id : '';
+                $old['batch_id'] = $batch_id > 0 ? (string)$batch_id : '';
+                $old['fullname'] = $fullname;
+                $old['dob'] = $dob;
+                $old['gender'] = $gender;
+                $old['place_of_birth'] = $place_of_birth;
+                $old['contact_personal'] = $contact_personal;
+                $old['contact_parent'] = $contact_parent;
+                $old['cnic'] = $cnic;
+                $old['address'] = $address;
+                $old['guardian_name'] = $guardian_name;
+                $old['guardian_type'] = $guardian_type;
+                $old['last_school'] = $last_school;
+                $old['qualification'] = $qualification;
+                $old['total_fee'] = ($total_fee > 0 ? (string)$total_fee : '');
+                $old['submitted_fee'] = ($submitted_fee >= 0 ? (string)$submitted_fee : '');
+                $old['remaining_fee'] = (string)$remaining_fee;
+                $old['receipt_number'] = $receipt_number;
+                $old['registration_number'] = (string)($curRow['registration_number'] ?? '');
+                $old['admission_date'] = (string)($curRow['admission_date'] ?? '');
+
+                if (empty($errors)) {
+                    $stmt = $db->prepare('UPDATE students SET course_id = ?, timing_id = ?, academic_session_id = ?, batch_id = ?, fullname = ?, dob = ?, gender = ?, place_of_birth = ?, contact_personal = ?, contact_parent = ?, cnic = ?, address = ?, guardian_name = ?, guardian_type = ?, last_school = ?, qualification = ?, total_fee = ?, submitted_fee = ?, remaining_fee = ?, receipt_number = ?, updated_at = ? WHERE id = ?');
+                    $ok = $stmt->execute([
+                        $course_id, $timing_id, $academic_session_id, $batch_id, $fullname, $dob, $gender, $place_of_birth,
+                        $contact_personal, ($contact_parent !== '' ? $contact_parent : null), ($cnic !== '' ? $cnic : null), ($address !== '' ? $address : null),
+                        $guardian_name, $guardian_type, ($last_school !== '' ? $last_school : null), $qualification,
+                        $total_fee, $submitted_fee, $remaining_fee,
+                        ($receipt_number !== '' ? $receipt_number : null),
+                        date('Y-m-d H:i:s'),
+                        $edit_id
+                    ]);
+                    if ($ok) {
+                        $success = 'Student updated successfully.';
+                    } else {
+                        $errors[] = 'Failed to update student.';
+                    }
+                }
+
+                $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+                if ($wantsJson) {
+                    header('Content-Type: application/json');
+                    echo json_encode([
+                        'success' => empty($errors) && $success !== '',
+                        'message' => empty($errors) ? $success : implode("\n", $errors),
+                        'csrf_token' => (string)($_SESSION['csrf_token'] ?? ''),
+                        'updated' => ['id' => $edit_id]
+                    ]);
+                    exit();
+                }
+            }
+        }
     }
 }
 
@@ -332,14 +576,16 @@ $csrf = csrfToken();
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Add Student</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+<link href="assets/css/design-system.css" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
 </head>
 <body>
 <?php include_once __DIR__ . '/partials/command_palette.php'; ?>
 <main class="container mt-4">
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h1 class="h4 mb-0">Add Student</h1>
+    <h1 class="h4 mb-0"><?php echo $isEdit ? 'Edit Student' : 'Add Student'; ?></h1>
     <a href="dashboard.php" class="btn btn-outline-secondary"><i class="fa-solid fa-arrow-left me-1"></i>Back to Dashboard</a>
   </div>
 
@@ -357,13 +603,22 @@ $csrf = csrfToken();
     <div class="card-body">
       <form method="post" enctype="multipart/form-data" id="addStudentForm">
         <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf); ?>">
-        <input type="hidden" name="action" value="create">
+        <input type="hidden" name="action" value="<?php echo $isEdit ? 'update' : 'create'; ?>">
+        <?php if ($isEdit): ?>
+          <input type="hidden" name="edit_id" value="<?php echo (int)$editId; ?>">
+        <?php endif; ?>
         <input type="hidden" name="captured_image" id="capturedImageInput" value="<?php echo htmlspecialchars($old['captured_image']); ?>">
 
         <div class="row g-3">
           <div class="col-md-4">
             <label class="form-label">Registration Number</label>
-            <input type="text" name="registration_number" class="form-control" value="<?php echo htmlspecialchars($old['registration_number']); ?>">
+            <input type="text" id="registrationNumberDisplay" class="form-control" value="<?php echo htmlspecialchars($old['registration_number']); ?>" disabled>
+            <div class="form-text">Auto-generated from course and date; not editable.</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Date of Admission</label>
+            <input type="date" id="admissionDateDisplay" class="form-control" value="<?php echo htmlspecialchars($old['admission_date'] !== '' ? $old['admission_date'] : date('Y-m-d')); ?>" disabled>
+            <div class="form-text">Auto-set to today; not editable.</div>
           </div>
           <div class="col-md-4">
             <label class="form-label">Course*</label>
@@ -397,7 +652,7 @@ $csrf = csrfToken();
             <select name="batch_id" id="batchSelect" class="form-select" required>
               <option value="">Select batch</option>
               <?php foreach ($batches as $b): ?>
-                <option value="<?php echo (int)$b['id']; ?>" data-session="<?php echo (int)$b['academic_session_id']; ?>" <?php echo ((string)$b['id'] === (string)$old['batch_id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($b['name']); ?></option>
+                <option value="<?php echo (int)$b['id']; ?>" data-session="<?php echo (int)$b['academic_session_id']; ?>" data-course="<?php echo (int)$b['course_id']; ?>" data-legacy-timing="<?php echo (int)$b['timing_id']; ?>" <?php echo ((string)$b['id'] === (string)$old['batch_id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($b['name']); ?></option>
               <?php endforeach; ?>
             </select>
             <div class="form-text">Only batches for the selected session are allowed.</div>
@@ -539,6 +794,7 @@ $csrf = csrfToken();
       <div class="card-header">Registration Summary</div>
       <div class="card-body">
         <p class="mb-1">Registration Number: <strong><?php echo htmlspecialchars($created['registration_number'] ?? 'N/A'); ?></strong></p>
+        <p class="mb-1">Date of Admission: <strong><?php echo htmlspecialchars($created['admission_date'] ?? ''); ?></strong></p>
         <p class="mb-1">ID: <strong><?php echo (int)$created['id']; ?></strong></p>
         <p class="mb-1">Fullname: <strong><?php echo htmlspecialchars($created['fullname']); ?></strong></p>
         <p class="mb-1">General Number: <strong><?php echo htmlspecialchars($created['general_number'] ?? ''); ?></strong></p>
@@ -562,6 +818,27 @@ $csrf = csrfToken();
   if (total && submitted && remaining) {
     total.addEventListener('input', update);
     submitted.addEventListener('input', update);
+  }
+})();
+// Preview auto-generated Registration Number when course changes
+(() => {
+  const courseSel = document.querySelector('select[name="course_id"]');
+  const regInput = document.getElementById('registrationNumberDisplay');
+  async function updateReg() {
+    if (!courseSel || !regInput) return;
+    const cid = courseSel.value;
+    if (!cid) { regInput.value = ''; return; }
+    try {
+      const res = await fetch('add_student.php?action=next_registration&course_id=' + encodeURIComponent(cid));
+      const data = await res.json();
+      if (data && data.registration_number) {
+        regInput.value = data.registration_number;
+      }
+    } catch (e) { /* ignore */ }
+  }
+  if (courseSel) {
+    courseSel.addEventListener('change', updateReg);
+    updateReg();
   }
 })();
 
@@ -602,27 +879,108 @@ $csrf = csrfToken();
   if (startBtn) startBtn.addEventListener('click', startCam);
   if (captureBtn) captureBtn.addEventListener('click', capture);
 })();
-// Filter batches by selected session
+// Filter batches by selected course and session
 (() => {
   const sessionSel = document.getElementById('academicSessionSelect');
   const batchSel = document.getElementById('batchSelect');
+  const courseSel = document.querySelector('select[name="course_id"]');
   function filterBatches() {
     if (!sessionSel || !batchSel) return;
     const sid = sessionSel.value;
+    const cid = courseSel ? courseSel.value : '';
     const options = Array.from(batchSel.querySelectorAll('option'));
     options.forEach(opt => {
       const ds = opt.getAttribute('data-session');
+      const dc = opt.getAttribute('data-course');
       if (!ds) return; // skip placeholder
-      opt.hidden = !!sid && ds !== sid;
+      const sessionOk = !!sid ? (ds === sid) : true;
+      const courseOk = !!cid ? (dc === cid) : true;
+      opt.hidden = !(sessionOk && courseOk);
     });
     const selOpt = batchSel.selectedOptions[0];
     if (selOpt && selOpt.hidden) {
+      batchSel.value = '';
+    }
+    // Disable batch until a session is selected
+    const hasSession = !!sid;
+    batchSel.disabled = !hasSession;
+    if (!hasSession) {
       batchSel.value = '';
     }
   }
   if (sessionSel) {
     sessionSel.addEventListener('change', filterBatches);
     filterBatches();
+  }
+  if (courseSel) {
+    courseSel.addEventListener('change', filterBatches);
+  }
+})();
+// When a batch is selected, restrict Course options to that batch's course
+(() => {
+  const batchSel = document.getElementById('batchSelect');
+  const courseSel = document.querySelector('select[name="course_id"]');
+  function syncCourseOptions() {
+    if (!courseSel) return;
+    const bid = batchSel ? batchSel.value : '';
+    const bcIndex = (window.__batchCourseIndex || {});
+    const cid = bid && bcIndex[bid] ? String(bcIndex[bid]) : '';
+    const options = Array.from(courseSel.querySelectorAll('option'));
+    if (cid) {
+      options.forEach(opt => { if (opt.value) opt.hidden = (opt.value !== cid); });
+      courseSel.value = cid;
+      courseSel.disabled = false;
+    } else {
+      options.forEach(opt => { opt.hidden = false; });
+      courseSel.value = '';
+      courseSel.disabled = true;
+    }
+  }
+  if (batchSel) {
+    batchSel.addEventListener('change', syncCourseOptions);
+    syncCourseOptions();
+  }
+})();
+// Embed batch->timings index for client-side filtering
+window.__batchTimingsIndex = <?php echo json_encode($batchTimingIds, JSON_UNESCAPED_UNICODE); ?>;
+window.__batchCourseIndex = <?php echo json_encode($batchCourseIndex, JSON_UNESCAPED_UNICODE); ?>;
+
+// Filter timings by selected batch (uses junction table, falls back to legacy timing)
+(() => {
+  const batchSel = document.getElementById('batchSelect');
+  const timingSel = document.querySelector('select[name="timing_id"]');
+  function filterTimings() {
+    if (!timingSel) return;
+    const bid = batchSel ? batchSel.value : '';
+    const allowedList = (bid && window.__batchTimingsIndex && window.__batchTimingsIndex[bid]) ? window.__batchTimingsIndex[bid].map(String) : [];
+    // Fallback: legacy single timing per batch if no junction entries
+    let legacy = '';
+    const selectedBatchOpt = batchSel && batchSel.selectedOptions[0] ? batchSel.selectedOptions[0] : null;
+    if (allowedList.length === 0 && selectedBatchOpt) {
+      legacy = selectedBatchOpt.getAttribute('data-legacy-timing') || '';
+      if (legacy) allowedList.push(String(legacy));
+    }
+    const options = Array.from(timingSel.querySelectorAll('option'));
+    let selectedVisible = false;
+    options.forEach(opt => {
+      if (!opt.value) { opt.hidden = false; return; }
+      const visible = bid && allowedList.length > 0 ? allowedList.includes(opt.value) : false;
+      opt.hidden = !visible;
+      if (visible && opt.selected) selectedVisible = true;
+    });
+    timingSel.disabled = !(bid && allowedList.length > 0);
+    if (!selectedVisible) {
+      timingSel.value = '';
+      const firstVisible = options.find(o => !o.hidden && o.value);
+      if (firstVisible) timingSel.value = firstVisible.value;
+    }
+  }
+  if (batchSel && timingSel) {
+    batchSel.addEventListener('change', filterTimings);
+    const sessionSel = document.getElementById('academicSessionSelect');
+    if (sessionSel) sessionSel.addEventListener('change', () => setTimeout(filterTimings, 0));
+    // initialize
+    filterTimings();
   }
 })();
 </script>

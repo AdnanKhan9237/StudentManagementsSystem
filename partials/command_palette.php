@@ -16,7 +16,6 @@ $destinations = [];
 if ($role === 'superadmin' || $role === 'accounts') {
 $destinations[] = ['label' => 'Dashboard', 'url' => 'dashboard.php'];
 $destinations[] = ['label' => 'Courses', 'url' => 'courses.php'];
-$destinations[] = ['label' => 'Enrollments', 'url' => 'enrollments.php'];
 $destinations[] = ['label' => 'Fees', 'url' => 'fees.php'];
 $destinations[] = ['label' => 'Assessments', 'url' => 'assessments.php'];
 $destinations[] = ['label' => 'Results', 'url' => 'results.php'];
@@ -29,7 +28,6 @@ $destinations[] = ['label' => 'Course Sessions', 'url' => 'course_sessions.php']
 $destinations[] = ['label' => 'Academic Sessions', 'url' => 'academic_sessions.php'];
 $destinations[] = ['label' => 'Timings', 'url' => 'timings.php'];
 $destinations[] = ['label' => 'Batches', 'url' => 'batches.php'];
-$destinations[] = ['label' => 'Admissions', 'url' => 'admissions.php'];
 $destinations[] = ['label' => 'Teacher & Students', 'url' => 'teacher_students.php'];
 $destinations[] = ['label' => 'Admin Panel', 'url' => 'admin.php'];
 }
@@ -49,13 +47,14 @@ $destinations[] = ['label' => 'My Results', 'url' => 'results.php'];
 $destinations[] = ['label' => 'My Attendance', 'url' => 'attendance.php'];
 }
 
-// Always include session actions
+// Account actions (palette hosts logout for consolidated UX)
 $actions = [
     ['label' => 'Change Password', 'url' => 'change_password.php'],
     ['label' => 'Log Out', 'url' => 'logout.php'],
 ];
 
 ?>
+<?php // Sidebar inclusion removed to avoid duplication; palette provides actions and navigation. ?>
 
 <style>
   /* Palette styles: minimal, modern, and responsive */
@@ -64,6 +63,8 @@ $actions = [
   .cmdk-card { background: #fff; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.18); overflow: hidden; border: 1px solid rgba(0,0,0,0.08); }
   .cmdk-header { padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,0.06); display: flex; align-items: center; gap: 8px; }
   .cmdk-input { border: none; outline: none; flex: 1; font-size: 16px; padding: 8px; }
+  .cmdk-tools { display:flex; gap:6px; align-items:center; }
+  .cmdk-btn { border:1px solid rgba(0,0,0,0.12); background:#fff; color:#333; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; }
   .cmdk-list { max-height: 50vh; overflow: auto; }
   .cmdk-item { padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04); }
   .cmdk-item:hover, .cmdk-item.active { background: #f6f8fa; }
@@ -77,6 +78,10 @@ $actions = [
     <div class="cmdk-header">
       <span class="cmdk-hint">Press Ctrl+K to search</span>
       <input id="cmdkInput" class="cmdk-input" type="text" placeholder="Search pages and actions..." aria-label="Command palette" />
+      <div class="cmdk-tools" role="group" aria-label="Theme">
+        <button id="cmdkThemeDark" class="cmdk-btn" type="button">Dark</button>
+        <button id="cmdkThemeLight" class="cmdk-btn" type="button">Light</button>
+      </div>
     </div>
     <div id="cmdkList" class="cmdk-list" role="listbox" aria-label="Available destinations"></div>
   </div>
@@ -93,6 +98,8 @@ $actions = [
     const container = document.getElementById('cmdkContainer');
     const input = document.getElementById('cmdkInput');
     const list = document.getElementById('cmdkList');
+    const btnDark = document.getElementById('cmdkThemeDark');
+    const btnLight = document.getElementById('cmdkThemeLight');
 
     let open = false;
     let items = [];
@@ -196,5 +203,19 @@ $actions = [
 
     input.addEventListener('input', (e) => renderList(e.target.value));
     overlay.addEventListener('click', closePalette);
+
+    // Theme persistence (consistent with sidebar.js)
+    const THEME_KEY = 'sos_theme';
+    const applyTheme = (mode) => {
+      if (mode === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+      } else {
+        document.documentElement.removeAttribute('data-theme');
+      }
+    };
+    const saved = localStorage.getItem(THEME_KEY) || 'dark';
+    applyTheme(saved);
+    if (btnDark) btnDark.addEventListener('click', () => { localStorage.setItem(THEME_KEY, 'dark'); applyTheme('dark'); });
+    if (btnLight) btnLight.addEventListener('click', () => { localStorage.setItem(THEME_KEY, 'light'); applyTheme('light'); });
   })();
 </script>

@@ -19,6 +19,22 @@ $db->exec("CREATE TABLE IF NOT EXISTS final_results (
     updated_at DATETIME NULL,
     INDEX (student_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+// Ensure teacher-batch mapping exists
+$db->exec("CREATE TABLE IF NOT EXISTS teacher_batches (
+    teacher_id INT NOT NULL,
+    batch_id INT NOT NULL,
+    assigned_at DATETIME NOT NULL,
+    PRIMARY KEY (teacher_id, batch_id),
+    INDEX (batch_id), INDEX (teacher_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+// Per-teacher allowed timings per batch
+$db->exec("CREATE TABLE IF NOT EXISTS teacher_batch_timings (
+    teacher_id INT NOT NULL,
+    batch_id INT NOT NULL,
+    timing_id INT NOT NULL,
+    PRIMARY KEY (teacher_id, batch_id, timing_id),
+    INDEX (teacher_id), INDEX (batch_id), INDEX (timing_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
 function csrfToken() { if (!isset($_SESSION['csrf_token'])) { $_SESSION['csrf_token'] = bin2hex(random_bytes(32)); } return $_SESSION['csrf_token']; }
 function verifyCsrf($t) { return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $t); }
@@ -26,7 +42,30 @@ function verifyCsrf($t) { return isset($_SESSION['csrf_token']) && hash_equals($
 $errors = [];
 $success = '';
 
-$students = $db->query("SELECT id, username FROM users WHERE role = 'student' ORDER BY username ASC")->fetchAll(PDO::FETCH_ASSOC);
+// Build allowed student IDs for this teacher
+$teacherId = (int) $session->getUserId();
+$allowedStudentIds = [];
+try {
+    $sql = "SELECT DISTINCT u.id
+            FROM users u
+            JOIN students s ON s.cnic = u.cnic
+            JOIN teacher_batches tb ON tb.batch_id = s.batch_id AND tb.teacher_id = ?
+            JOIN teacher_batch_timings tbt ON tbt.teacher_id = tb.teacher_id AND tbt.batch_id = tb.batch_id AND tbt.timing_id = s.timing_id
+            WHERE u.role = 'student'";
+    $sStmt = $db->prepare($sql);
+    $sStmt->execute([$teacherId]);
+    $allowedStudentIds = array_map('intval', array_column($sStmt->fetchAll(PDO::FETCH_ASSOC), 'id'));
+} catch (Throwable $e) { /* ignore */ }
+
+// Dropdown students limited to allowed set
+if (!empty($allowedStudentIds)) {
+    $in = implode(',', array_fill(0, count($allowedStudentIds), '?'));
+    $stmt = $db->prepare("SELECT id, username FROM users WHERE role = 'student' AND id IN ($in) ORDER BY username ASC");
+    $stmt->execute($allowedStudentIds);
+    $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} else {
+    $students = [];
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -40,6 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $remarks = trim($_POST['remarks'] ?? '');
             $finalized_at = trim($_POST['finalized_at'] ?? '');
             if ($student_id <= 0 || $course === '' || $result === '' || $finalized_at === '') { $errors[] = 'Student, course, result, and date are required.'; }
+            elseif (!in_array($student_id, $allowedStudentIds, true)) { $errors[] = 'You are not assigned to this student.'; }
             else {
                 $stmt = $db->prepare('INSERT INTO final_results (student_id, course, result, remarks, finalized_at, created_at) VALUES (?, ?, ?, ?, ?, ?)');
                 $ok = $stmt->execute([$student_id, $course, $result, $remarks, $finalized_at, date('Y-m-d H:i:s')]);
@@ -52,19 +92,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $remarks = trim($_POST['remarks'] ?? '');
             if ($id <= 0 || $course === '' || $result === '') { $errors[] = 'Invalid input.'; }
             else {
-                $stmt = $db->prepare('UPDATE final_results SET course = ?, result = ?, remarks = ?, updated_at = ? WHERE id = ?');
-                $ok = $stmt->execute([$course, $result, $remarks, date('Y-m-d H:i:s'), $id]);
-                if ($ok) { $success = 'Final result updated.'; } else { $errors[] = 'Failed to update result.'; }
+                // Enforce teacher authorization
+                $sidStmt = $db->prepare('SELECT student_id FROM final_results WHERE id = ?');
+                $sidStmt->execute([$id]);
+                $sid = (int)($sidStmt->fetchColumn() ?: 0);
+                if ($sid > 0 && !in_array($sid, $allowedStudentIds, true)) {
+                    $errors[] = 'You are not assigned to this student.';
+                }
+                if (empty($errors)) {
+                    $stmt = $db->prepare('UPDATE final_results SET course = ?, result = ?, remarks = ?, updated_at = ? WHERE id = ?');
+                    $ok = $stmt->execute([$course, $result, $remarks, date('Y-m-d H:i:s'), $id]);
+                    if ($ok) { $success = 'Final result updated.'; } else { $errors[] = 'Failed to update result.'; }
+                }
             }
         } elseif ($action === 'delete') {
             $id = (int)($_POST['id'] ?? 0);
             if ($id <= 0) { $errors[] = 'Invalid record ID.'; }
-            else { $ok = $db->prepare('DELETE FROM final_results WHERE id = ?')->execute([$id]); if ($ok) { $success = 'Final result deleted.'; } else { $errors[] = 'Failed to delete result.'; } }
+            else {
+                // Enforce teacher authorization
+                $sidStmt = $db->prepare('SELECT student_id FROM final_results WHERE id = ?');
+                $sidStmt->execute([$id]);
+                $sid = (int)($sidStmt->fetchColumn() ?: 0);
+                if ($sid > 0 && !in_array($sid, $allowedStudentIds, true)) {
+                    $errors[] = 'You are not assigned to this student.';
+                }
+                if (empty($errors)) {
+                    $ok = $db->prepare('DELETE FROM final_results WHERE id = ?')->execute([$id]);
+                    if ($ok) { $success = 'Final result deleted.'; } else { $errors[] = 'Failed to delete result.'; }
+                }
+            }
         }
     }
 }
-
-$rows = $db->query("SELECT r.id, r.course, r.result, r.remarks, r.finalized_at, u.username AS student_name FROM final_results r JOIN users u ON u.id = r.student_id ORDER BY r.finalized_at DESC, r.id DESC")->fetchAll(PDO::FETCH_ASSOC);
+// Restrict listing to allowed students
+if (!empty($allowedStudentIds)) {
+    $in = implode(',', array_fill(0, count($allowedStudentIds), '?'));
+    $stmt = $db->prepare("SELECT r.id, r.course, r.result, r.remarks, r.finalized_at, u.username AS student_name
+                           FROM final_results r JOIN users u ON u.id = r.student_id
+                           WHERE r.student_id IN ($in)
+                           ORDER BY r.finalized_at DESC, r.id DESC");
+    $stmt->execute($allowedStudentIds);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} else {
+    $rows = [];
+}
 ?>
 <!doctype html>
 <html lang="en">
@@ -72,7 +143,9 @@ $rows = $db->query("SELECT r.id, r.course, r.result, r.remarks, r.finalized_at, 
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Final Results</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+<link href="assets/css/design-system.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
 </head>
 <body>
