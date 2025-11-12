@@ -3,44 +3,80 @@ require_once __DIR__ . '/../classes/Session.php';
 $session = Session::getInstance();
 $role = (string)$session->get('role');
 $current = basename($_SERVER['PHP_SELF']);
-function navItem($label, $url, $current) {
-  $active = ($current === basename($url)) ? ' active' : '';
-  return '<a class="nav-link'.$active.'" href="'.htmlspecialchars($url).'">'
-       .'<i class="fa-solid fa-circle fa-xs" aria-hidden="true"></i>'
-       .'<span class="label">'.htmlspecialchars($label).'</span>'
-       .'</a>';
+
+function navItem($label, $url, $current, $icon) {
+    $active = ($current === basename($url)) ? ' active' : '';
+    return '<a class="nav-link' . $active . '" href="' . htmlspecialchars($url) . '">' .
+           '<i class="fa-solid ' . $icon . ' fa-fw" aria-hidden="true"></i>' .
+           '<span class="label">' . htmlspecialchars($label) . '</span>' .
+           '</a>';
+}
+
+function navDropdown($label, $icon, $links, $current) {
+    $isActive = false;
+    foreach ($links as $link) {
+        if (basename($link['url']) === $current) {
+            $isActive = true;
+            break;
+        }
+    }
+    $html = '<div class="nav-dropdown' . ($isActive ? ' active' : '') . '">';
+    $html .= '<a href="#" class="nav-link dropdown-toggle">' .
+             '<i class="fa-solid ' . $icon . ' fa-fw" aria-hidden="true"></i>' .
+             '<span class="label">' . htmlspecialchars($label) . '</span>' .
+             '</a>';
+    $html .= '<div class="dropdown-menu">';
+    foreach ($links as $link) {
+        $html .= navItem($link['label'], $link['url'], $current, 'fa-circle');
+    }
+    $html .= '</div></div>';
+    return $html;
 }
 ?>
 <aside class="app-sidebar" aria-label="Primary">
   <div class="brand">
     <span class="logo" aria-hidden="true"></span>
-    <span class="label">SOS Technical Training</span>
+    <span class="label">sp!k</span>
   </div>
   <nav>
-    <div class="nav-section">Menu</div>
-    <?php echo navItem('Dashboard', 'dashboard.php', $current); ?>
-    <?php echo navItem('Attendance', 'attendance.php', $current); ?>
-    <?php echo navItem('Students', 'students.php', $current); ?>
-    <?php echo navItem('Student Records', 'student_records.php', $current); ?>
-    <?php echo navItem('Courses', 'courses.php', $current); ?>
-    <?php echo navItem('Course Sessions', 'course_sessions.php', $current); ?>
-    <?php echo navItem('Academic Sessions', 'academic_sessions.php', $current); ?>
-    <?php echo navItem('Batches', 'batches.php', $current); ?>
-    <?php echo navItem('Timings', 'timings.php', $current); ?>
-    <?php echo navItem('Assessments', 'assessments.php', $current); ?>
-    <?php echo navItem('Results', 'results.php', $current); ?>
-    <?php echo navItem('Notifications', 'notifications.php', $current); ?>
-    <?php if (in_array($role, ['superadmin','accounts'], true)) { echo navItem('Manage Users', 'manage_users.php', $current); echo navItem('Admin Panel', 'admin.php', $current);} ?>
-    <div class="nav-section">Account</div>
-    <?php echo navItem('Change Password', 'change_password.php', $current); ?>
-    <?php echo navItem('Log Out', 'logout.php', $current); ?>
+    <?php echo navItem('Home', 'dashboard.php', $current, 'fa-home'); ?>
+    <?php 
+        if (in_array($role, ['superadmin', 'admin'], true)) {
+            echo navDropdown('Admin', 'fa-user-shield', [
+                ['label' => 'Admin', 'url' => 'admin.php'],
+                ['label' => 'Students', 'url' => 'students.php'],
+                ['label' => 'Manage Users', 'url' => 'manage_users.php'],
+                ['label' => 'Audit Logs', 'url' => 'audit_logs.php'],
+            ], $current);
+        }
+    ?>
+    <?php echo navDropdown('Students', 'fa-users', [
+        ['label' => 'Students', 'url' => 'students.php'],
+        ['label' => 'Add Student', 'url' => 'add_student.php'],
+        ['label' => 'Student Records', 'url' => 'student_records.php'],
+    ], $current); ?>
+    <?php echo navDropdown('Courses', 'fa-book', [
+        ['label' => 'Courses', 'url' => 'courses.php'],
+        ['label' => 'Batches', 'url' => 'batches.php'],
+        ['label' => 'Timings', 'url' => 'timings.php'],
+        ['label' => 'Academic Sessions', 'url' => 'academic_sessions.php'],
+        ['label' => 'Course Sessions', 'url' => 'course_sessions.php'],
+    ], $current); ?>
+    <?php echo navItem('Attendance', 'attendance.php', $current, 'fa-clipboard-user'); ?>
+    <?php echo navDropdown('Results', 'fa-graduation-cap', [
+        ['label' => 'Results', 'url' => 'results.php'],
+        ['label' => 'Assessments', 'url' => 'assessments.php'],
+    ], $current); ?>
+    <?php echo navDropdown('Account', 'fa-user-circle', [
+        ['label' => 'Change Password', 'url' => 'change_password.php'],
+        ['label' => 'Log Out', 'url' => 'logout.php'],
+    ], $current); ?>
+    <?php echo navItem('Fees', 'fees.php', $current, 'fa-money-bill'); ?>
+    <?php echo navItem('Notifications', 'notifications.php', $current, 'fa-bell'); ?>
   </nav>
   <div class="footer">
-    <div class="theme-toggle">
-      <button id="themeDark" class="btn btn-sm btn-outline-secondary" type="button">Dark</button>
-      <button id="themeLight" class="btn btn-sm btn-outline-secondary" type="button">Light</button>
-    </div>
+    <!-- Footer content can go here -->
   </div>
 </aside>
 <script src="assets/js/sidebar.js"></script>
-
+

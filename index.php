@@ -148,9 +148,19 @@ if (!$success && isset($_GET['logout']) && $_GET['logout'] == '1') {
                     if (input.type === 'password') {
                         input.type = 'text';
                         if (icon) { icon.classList.remove('fa-eye'); icon.classList.add('fa-eye-slash'); }
+                        this.setAttribute('aria-label', 'Hide password');
                     } else {
                         input.type = 'password';
                         if (icon) { icon.classList.remove('fa-eye-slash'); icon.classList.add('fa-eye'); }
+                        this.setAttribute('aria-label', 'Show password');
+                    }
+                });
+                
+                // Add keyboard support for password toggle
+                toggle.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.click();
                     }
                 });
             }
@@ -166,12 +176,14 @@ if (!$success && isset($_GET['logout']) && $_GET['logout'] == '1') {
         if (!alertBox) {
           alertBox = document.createElement('div');
           alertBox.className = 'alert d-none mt-2';
+          alertBox.setAttribute('role', 'alert');
           form.appendChild(alertBox);
         }
 
         function showMessage(type, text) {
           alertBox.className = `alert alert-${type} mt-2`;
           alertBox.textContent = text || '';
+          alertBox.style.display = text ? 'block' : 'none';
         }
 
         function setLoading(loading) {
@@ -180,6 +192,7 @@ if (!$success && isset($_GET['logout']) && $_GET['logout'] == '1') {
           submitBtn.innerHTML = loading
             ? '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>LOGIN'
             : '<i class="fa-solid fa-right-to-bracket me-2"></i>LOGIN';
+          submitBtn.setAttribute('aria-busy', loading);
         }
 
         form.addEventListener('submit', async function(e) {
@@ -194,17 +207,28 @@ if (!$success && isset($_GET['logout']) && $_GET['logout'] == '1') {
           const fd = new FormData(form);
           fd.append('ajax', '1');
           try {
-            const res = await fetch('login.php', { method: 'POST', headers: { 'Accept': 'application/json' }, body: fd });
+            const res = await fetch('login.php', { 
+              method: 'POST', 
+              headers: { 'Accept': 'application/json' }, 
+              body: fd,
+              signal: AbortSignal.timeout(10000) // 10 second timeout
+            });
             const json = await res.json();
             if (json && json.success) {
               showMessage('success', 'Login successful. Redirecting…');
               const to = (json.redirect || 'dashboard.php');
-              window.location.href = to;
+              setTimeout(() => {
+                window.location.href = to;
+              }, 1000);
             } else {
               showMessage('danger', (json && json.message) || 'Login failed');
             }
           } catch (err) {
-            showMessage('danger', 'Network error. Please try again.');
+            if (err.name === 'TimeoutError') {
+              showMessage('danger', 'Request timed out. Please try again.');
+            } else {
+              showMessage('danger', 'Network error. Please try again.');
+            }
           } finally {
             setLoading(false);
           }

@@ -10,14 +10,15 @@ function assertTrue($cond, $msg)
     }
 }
 
-echo "Running Layout tests (no sidebar)...\n";
+echo "Running Layout tests (sidebar restored)...\n";
 
-// Capture dashboard output and ensure no sidebar is present.
+// Capture dashboard output and ensure sidebar is present.
 ob_start();
 include __DIR__ . '/../dashboard.php';
 $html = ob_get_clean();
 
-assertTrue(strpos($html, '<aside') === false, 'Dashboard does not render a sidebar');
+assertTrue(strpos($html, '<aside') !== false, 'Dashboard renders a sidebar');
+assertTrue(strpos($html, 'app-sidebar') !== false, 'Dashboard has app-sidebar class');
 assertTrue(strpos($html, 'id="cmdkOverlay"') !== false, 'Command palette overlay is present');
 assertTrue(strpos($html, 'id="cmdkInput"') !== false, 'Command palette input is present');
 

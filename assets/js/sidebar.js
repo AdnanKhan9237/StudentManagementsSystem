@@ -1,21 +1,42 @@
-(() => {
-  // Apply theme from localStorage (persisted across pages)
-  const saved = localStorage.getItem('sos_theme');
-  if (saved === 'light') {
-    document.documentElement.setAttribute('data-theme', 'light');
-  } else {
-    document.documentElement.removeAttribute('data-theme');
-  }
+document.addEventListener('DOMContentLoaded', function () {
+    const dropdownToggles = document.querySelectorAll('.app-sidebar .dropdown-toggle');
 
-  const btnDark = document.getElementById('themeDark');
-  const btnLight = document.getElementById('themeLight');
-  if (btnDark) btnDark.addEventListener('click', () => {
-    localStorage.setItem('sos_theme', 'dark');
-    document.documentElement.removeAttribute('data-theme');
-  });
-  if (btnLight) btnLight.addEventListener('click', () => {
-    localStorage.setItem('sos_theme', 'light');
-    document.documentElement.setAttribute('data-theme', 'light');
-  });
-})();
+    dropdownToggles.forEach(toggle => {
+        toggle.addEventListener('click', function (e) {
+            e.preventDefault();
+            const parent = this.parentElement;
+            if (parent.classList.contains('active')) {
+                parent.classList.remove('active');
+            } else {
+                // Close all other open dropdowns
+                document.querySelectorAll('.app-sidebar .nav-dropdown.active').forEach(openDropdown => {
+                    openDropdown.classList.remove('active');
+                });
+                parent.classList.add('active');
+            }
+        });
+    });
 
+    // Add keyboard navigation support
+    const navLinks = document.querySelectorAll('.app-sidebar .nav-link');
+    navLinks.forEach(link => {
+        link.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (this.classList.contains('dropdown-toggle')) {
+                    this.click();
+                } else {
+                    window.location.href = this.href;
+                }
+            }
+        });
+    });
+
+    // Handle mobile menu toggle if needed
+    const sidebar = document.querySelector('.app-sidebar');
+    if (sidebar && window.innerWidth <= 767) {
+        // Add mobile menu functionality
+        sidebar.setAttribute('role', 'navigation');
+        sidebar.setAttribute('aria-label', 'Main navigation');
+    }
+});

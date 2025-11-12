@@ -18,6 +18,31 @@ if ($role === '') {
     $role = isset($currentUser['role']) ? (string)$currentUser['role'] : 'user';
 }
 
+// Student gender distribution
+$studentGender = ['Male' => 0, 'Female' => 0];
+try {
+    // Assuming a 'gender' column exists in the 'students' table
+    $stmt = $db->query("SELECT gender, COUNT(*) as c FROM students WHERE gender IN ('Male', 'Female') AND general_number IS NOT NULL GROUP BY gender");
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $studentGender[$r['gender']] = (int)$r['c'];
+    }
+} catch (Throwable $e) { /* ignore */ }
+
+// Star Students
+$starStudents = [];
+try {
+    // This is a placeholder query. You will need to adjust this based on your database schema.
+    $starStudents = $db->query("SELECT s.first_name, s.last_name, s.general_number as id, r.marks, r.percentage, r.year FROM students s JOIN results r ON s.id = r.student_id ORDER BY r.percentage DESC LIMIT 5")->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) { /* ignore */ }
+
+// New Students
+$newStudents = [];
+try {
+    // This is a placeholder query. You will need to adjust this based on your database schema.
+    $newStudents = $db->query("SELECT first_name, last_name, general_number as id, course_id, batch_id FROM students ORDER BY created_at DESC LIMIT 5")->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) { /* ignore */ }
+
+
 // Get flash messages
 $success = $session->getFlash('success');
 
@@ -79,6 +104,12 @@ $countCourses = countTable($db, 'courses');
 $countTimings = countTable($db, 'timings');
 $countBatches = countTable($db, 'batches');
 $countSessions = countTable($db, 'academic_sessions');
+$countTeachers = countTable($db, 'teachers');
+$countParents = countTable($db, 'parents');
+$totalEarnings = 0;
+try {
+    $totalEarnings = (float)($db->query("SELECT SUM(amount) FROM payments")->fetchColumn() ?: 0);
+} catch (Throwable $e) { $totalEarnings = 0; }
 // Unacknowledged notifications count for admin roles
 $unackNotifications = 0;
 try {
@@ -180,117 +211,301 @@ try {
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="assets/css/design-system.css" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
-  <style>
-    :root { --bg:#111317; --panel:#1a1d24; --muted:#8b93a6; --text:#e6e9ef; --accent:#4c75ff; --success:#24c58a; --warning:#e3b341; --danger:#ff6b6b; }
-    body { background: var(--bg); color: var(--text); }
-    body.light { --bg:#f6f7fb; --panel:#ffffff; --muted:#5f6677; --text:#1b1e24; --accent:#2f59ff; --success:#1fa876; --warning:#c99a27; --danger:#d74f4f; }
-    .app-shell { display:grid; grid-template-columns: 280px 1fr; min-height:100vh; }
-    .brand { font-weight:700; letter-spacing:.4px; margin-bottom:16px; }
-    .nav-link { color: var(--muted); border-radius:10px; padding:10px 12px; display:flex; align-items:center; gap:10px; }
-    .nav-link.active, .nav-link:hover { color: var(--text); background: rgba(255,255,255,0.06); }
-    main { padding:20px; }
-    .topbar { display:flex; gap:14px; align-items:center; justify-content:space-between; margin-bottom:18px; }
-    .topbar .search { flex:1; }
-    .topbar input { background:#0e1013; border:1px solid rgba(255,255,255,0.08); color:var(--text); }
-    .card { background: var(--panel); color: var(--text); border: 1px solid rgba(255,255,255,0.06); }
-    .metric-title { color: var(--muted); font-size:.85rem; }
-    .metric-value { font-size:1.6rem; font-weight:700; }
-    .panel-title { font-weight:600; }
-    .table { color: var(--text); }
-    .table thead { color: var(--muted); }
-    .table td, .table th { border-color: rgba(255,255,255,0.08) !important; }
-  </style>
 </head>
 <body>
+<a href="#main-content" class="skip-link">Skip to main content</a>
 <div class="app-shell">
   <?php include_once __DIR__ . '/partials/sidebar.php'; ?>
-  <main>
-    <div class="topbar">
-      <div class="search">
-        <input class="form-control form-control-lg" placeholder="Search…" />
-      </div>
-      <div class="d-flex align-items-center gap-3">
-        <a href="notifications.php" class="btn btn-outline-light position-relative"><i class="fa-solid fa-bell"></i><?php if ($unackNotifications>0): ?><span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger"><?php echo (int)$unackNotifications; ?></span><?php endif; ?></a>
-        <div class="btn btn-outline-light"><?php echo htmlspecialchars($session->getUsername() ?? 'User'); ?></div>
-      </div>
-    </div>
-
-    <?php if ($success): ?><div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div><?php endif; ?>
-
-    <div class="row g-3 mb-3">
-      <div class="col-6 col-md-4 col-lg-2"><div class="card p-3"><div class="metric-title">Students</div><div class="metric-value"><?php echo (int)$countActiveStudents; ?></div></div></div>
-      <div class="col-6 col-md-4 col-lg-2"><div class="card p-3"><div class="metric-title">Courses</div><div class="metric-value"><?php echo (int)$countCourses; ?></div></div></div>
-      <div class="col-6 col-md-4 col-lg-2"><div class="card p-3"><div class="metric-title">Timings</div><div class="metric-value"><?php echo (int)$countTimings; ?></div></div></div>
-      <div class="col-6 col-md-4 col-lg-2"><div class="card p-3"><div class="metric-title">Batches</div><div class="metric-value"><?php echo (int)$countBatches; ?></div></div></div>
-      <div class="col-6 col-md-4 col-lg-2"><div class="card p-3"><div class="metric-title">Sessions</div><div class="metric-value"><?php echo (int)$countSessions; ?></div></div></div>
-      <div class="col-6 col-md-4 col-lg-2"><div class="card p-3"><div class="metric-title">Unack Alerts</div><div class="metric-value text-danger"><?php echo (int)$unackNotifications; ?></div></div></div>
-    </div>
-
-    <div class="row g-3">
-      <div class="col-lg-8">
-        <div class="card p-3 mb-3">
-          <div class="d-flex justify-content-between align-items-center">
-            <div class="panel-title">Attendance Trend (14 days)</div>
-            <div class="d-flex gap-2">
-              <a href="attendance_report.php" class="btn btn-sm btn-outline-light">Report</a>
-              <a href="scripts/export_attendance_trend.php" class="btn btn-sm btn-outline-primary"><i class="fa-solid fa-file-arrow-down me-1"></i>Export CSV</a>
+  <main id="main-content">
+    <header class="app-header">
+        <div class="search-wrapper">
+            <input type="text" placeholder="What do you want to find?">
+            <i class="fa-solid fa-search"></i>
+        </div>
+        <div class="user-profile">
+            <i class="fa-solid fa-bell"></i>
+            <i class="fa-solid fa-comment-dots"></i>
+            <div class="user-info">
+                <img src="https://i.pravatar.cc/40?u=<?php echo urlencode($session->getUsername() ?? 'user'); ?>" alt="User Avatar" class="avatar">
+                <div class="user-details">
+                    <span class="user-name"><?php echo htmlspecialchars($session->getUsername() ?? 'User'); ?></span>
+                    <span class="user-role"><?php echo htmlspecialchars(ucfirst($role)); ?></span>
+                </div>
             </div>
-          </div>
-          <canvas id="trendChart" height="120"></canvas>
         </div>
-      </div>
-      <div class="col-lg-4">
-        <div class="card p-3 mb-3"><div class="panel-title mb-2">Today’s Attendance</div><canvas id="donutChart" height="160"></canvas></div>
-        <div class="card p-3">
-          <div class="panel-title mb-2">Recent Alerts</div>
-          <table class="table table-sm"><thead><tr><th>Date</th><th>Title</th><th>Level</th></tr></thead><tbody>
-            <?php foreach ($recentAlerts as $a): ?>
-              <tr>
-                <td><?php echo htmlspecialchars($a['created_at']); ?></td>
-                <td><?php echo htmlspecialchars($a['title']); ?></td>
-                <td><span class="badge <?php echo $a['level']==='info'?'bg-info':($a['level']==='warning'?'bg-warning text-dark':'bg-danger'); ?>"><?php echo htmlspecialchars($a['level']); ?></span></td>
-              </tr>
-            <?php endforeach; ?>
-            <?php if (empty($recentAlerts)): ?><tr><td colspan="3" class="text-muted">No alerts.</td></tr><?php endif; ?>
-          </tbody></table>
-        </div>
-      </div>
-    </div>
+    </header>
 
-    <?php if ($role === 'superadmin'): ?>
-      <div class="card mt-3">
-        <div class="card-header">Student Registration Settings</div>
-        <div class="card-body">
-          <form method="post" class="row g-3 align-items-end">
-            <input type="hidden" name="action" value="set_general_number">
-            <div class="col-md-4">
-              <label class="form-label">General Number Start</label>
-              <input type="number" name="general_number_start" class="form-control" value="<?php echo (int)$generalNext; ?>" min="1" required>
-              <div class="form-text">Current next: <?php echo (int)$generalNext; ?>. Used to assign GR number on admission.</div>
+    <div class="content-wrapper">
+        <?php if ($success): ?>
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            <?php echo htmlspecialchars($success); ?>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+        <?php endif; ?>
+        <div class="page-header">
+            <h1>Dashboard</h1>
+            <p class="text-muted">Welcome back, <?php echo htmlspecialchars($session->getUsername() ?? 'User'); ?></p>
+        </div>
+        <div class="main-content">
+            <div class="content-grid">
+                <div class="main-column">
+                    <div class="card-group">
+                        <div class="card card-stat">
+                            <div class="card-body">
+                                <div class="card-icon">
+                                    <i class="fa-solid fa-user-graduate"></i>
+                                </div>
+                                <div class="card-content">
+                                    <h5 class="card-title">Students</h5>
+                                    <p class="card-text"><?php echo (int)$countActiveStudents; ?></p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card card-stat">
+                            <div class="card-body">
+                                <div class="card-icon">
+                                    <i class="fa-solid fa-chalkboard-user"></i>
+                                </div>
+                                <div class="card-content">
+                                    <h5 class="card-title">Teachers</h5>
+                                    <p class="card-text"><?php echo (int)$countTeachers; ?></p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card card-stat">
+                            <div class="card-body">
+                                <div class="card-icon">
+                                    <i class="fa-solid fa-user-friends"></i>
+                                </div>
+                                <div class="card-content">
+                                    <h5 class="card-title">Parents</h5>
+                                    <p class="card-text"><?php echo (int)$countParents; ?></p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card card-stat">
+                            <div class="card-body">
+                                <div class="card-icon">
+                                    <i class="fa-solid fa-dollar-sign"></i>
+                                </div>
+                                <div class="card-content">
+                                    <h5 class="card-title">Earnings</h5>
+                                    <p class="card-text">$<?php echo number_format($totalEarnings, 2); ?></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h2 class="h5 mb-0">All Exam Results</h2>
+                            <div class="btn-group btn-group-sm" role="group" aria-label="Time Period Selection">
+                                <input type="radio" class="btn-check" name="period" id="monthly" autocomplete="off" checked>
+                                <label class="btn btn-outline-primary" for="monthly">Monthly</label>
+                                <input type="radio" class="btn-check" name="period" id="weekly" autocomplete="off">
+                                <label class="btn btn-outline-primary" for="weekly">Weekly</label>
+                                <input type="radio" class="btn-check" name="period" id="yearly" autocomplete="off">
+                                <label class="btn btn-outline-primary" for="yearly">Yearly</label>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="examChart" height="300" aria-label="Exam Results Chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h2 class="card-title mb-0 h5">Star Students</h2>
+                            <a href="students.php" class="btn btn-sm btn-outline-primary" aria-label="View all students">View All</a>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover" role="table" aria-label="Star Students Table">
+                                    <thead>
+                                        <tr>
+                                            <th scope="col">Name</th>
+                                            <th scope="col">ID</th>
+                                            <th scope="col">Marks</th>
+                                            <th scope="col">Percent</th>
+                                            <th scope="col">Year</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php if (!empty($starStudents)): ?>
+                                            <?php foreach ($starStudents as $student): ?>
+                                                <tr>
+                                                    <td>
+                                                        <div class="d-flex align-items-center">
+                                                            <img src="https://i.pravatar.cc/40?u=<?php echo urlencode($student['first_name']); ?>" alt="User Avatar" class="user-avatar">
+                                                            <div class="user-name"><?php echo htmlspecialchars($student['first_name'] . ' ' . $student['last_name']); ?></div>
+                                                        </div>
+                                                    </td>
+                                                    <td><?php echo htmlspecialchars($student['id']); ?></td>
+                                                    <td><?php echo htmlspecialchars($student['marks']); ?></td>
+                                                    <td><span class="badge bg-success" aria-label="Percentage: <?php echo htmlspecialchars($student['percentage']); ?>%"><?php echo htmlspecialchars($student['percentage']); ?>%</span></td>
+                                                    <td><?php echo htmlspecialchars($student['year']); ?></td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
+                                            <tr>
+                                                <td colspan="5" class="text-center text-muted">No star students found</td>
+                                            </tr>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="side-column">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h2>Students</h2>
+                            <i class="fa-solid fa-ellipsis"></i>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="studentsChart" height="200"></canvas>
+                            <div class="chart-legend">
+                                <div class="legend-item"><span class="legend-color" style="background-color: #a96eff;"></span> Male</div>
+                                <div class="legend-item"><span class="legend-color" style="background-color: #ffc107;"></span> Female</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card exam-results-container">
+                        <div class="exam-results-header">
+                            <h2>All Exam Results</h2>
+                            <i class="fa-solid fa-ellipsis"></i>
+                        </div>
+                        <div class="exam-result-item">
+                            <div class="exam-result-icon" style="background-color: #e0f7fa;">
+                                <i class="fa-solid fa-user-graduate" style="color: #00bcd4;"></i>
+                            </div>
+                            <div class="exam-result-details">
+                                <div class="exam-result-title">New Teacher</div>
+                                <div class="exam-result-description">It is a long established readable.</div>
+                            </div>
+                            <div class="exam-result-time">Just now</div>
+                        </div>
+                        <div class="exam-result-item">
+                            <div class="exam-result-icon" style="background-color: #fce4ec;">
+                                <i class="fa-solid fa-file-invoice-dollar" style="color: #e91e63;"></i>
+                            </div>
+                            <div class="exam-result-details">
+                                <div class="exam-result-title">Fees Structure</div>
+                                <div class="exam-result-description">It is a long established readable.</div>
+                            </div>
+                            <div class="exam-result-time">Today</div>
+                        </div>
+                        <div class="exam-result-item">
+                            <div class="exam-result-icon" style="background-color: #e8f5e9;">
+                                <i class="fa-solid fa-book" style="color: #4caf50;"></i>
+                            </div>
+                            <div class="exam-result-details">
+                                <div class="exam-result-title">New Course</div>
+                                <div class="exam-result-description">It is a long established readable.</div>
+                            </div>
+                            <div class="exam-result-time">24 Sep 2023</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h2 class="panel-title">Settings</h2>
+                        </div>
+                        <div class="card-body">
+                            <form method="POST" action="">
+                                <input type="hidden" name="action" value="set_general_number">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div class="col-auto">
+                                        <label class="form-label">Next General Number</label>
+                                        <input type="number" name="general_number_start" class="form-control" value="<?php echo $generalNext; ?>">
+                                    </div>
+                                    <div class="col-auto">
+                                        <button type="submit" class="btn btn-primary">Save</button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="col-md-3"><button class="btn btn-primary" type="submit">Save</button></div>
-          </form>
         </div>
-      </div>
-    <?php endif; ?>
 
-    <?php include_once __DIR__ . '/partials/command_palette.php'; ?>
+    </div>
   </main>
 </div>
-
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-  const trendLabels = <?php echo json_encode($trendLabels); ?>;
-  const trendCounts = <?php echo json_encode($trendCounts); ?>;
-  const donutData = <?php echo json_encode(array_values($attToday)); ?>;
-  const donutLabels = ['Present','Absent','Leave'];
-  if (document.getElementById('trendChart')) {
-    new Chart(document.getElementById('trendChart'), { type:'line', data:{ labels:trendLabels, datasets:[{ label:'Attendance records', data:trendCounts, borderColor:'#4c75ff', tension:.3, fill:false }] }, options:{ plugins:{ legend:{ display:false } }, scales:{ x:{ ticks:{ color:'#8b93a6' } }, y:{ ticks:{ color:'#8b93a6' } } } } });
-  }
-  if (document.getElementById('donutChart')) {
-    new Chart(document.getElementById('donutChart'), { type:'doughnut', data:{ labels:donutLabels, datasets:[{ data:donutData, backgroundColor:['#24c58a','#ff6b6b','#e3b341'] }] }, options:{ plugins:{ legend:{ labels:{ color:'#e6e9ef' } } } } });
-  }
+  // Chart initialization with error handling
+  document.addEventListener('DOMContentLoaded', function() {
+    try {
+      // Students gender distribution chart
+      const studentsChartCtx = document.getElementById('studentsChart');
+      if (studentsChartCtx) {
+        new Chart(studentsChartCtx, {
+          type: 'doughnut',
+          data: {
+            labels: ['Male', 'Female'],
+            datasets: [{
+              label: 'Students',
+              data: [<?php echo (int)$studentGender['Male']; ?>, <?php echo (int)$studentGender['Female']; ?>],
+              backgroundColor: ['#a96eff', '#ffc107'],
+              borderWidth: 0
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                display: false
+              }
+            }
+          }
+        });
+      }
+
+      // Exam results chart
+      const examCtx = document.getElementById('examChart');
+      if (examCtx) {
+        new Chart(examCtx, {
+          type: 'line',
+          data: {
+            labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+            datasets: [{
+              label: 'Teacher',
+              data: [65, 59, 80, 81, 56, 55, 40],
+              borderColor: '#a96eff',
+              backgroundColor: 'rgba(169, 110, 255, 0.1)',
+              tension: 0.3,
+              fill: true
+            }, {
+              label: 'Students',
+              data: [28, 48, 40, 19, 86, 27, 90],
+              borderColor: '#63c7ff',
+              backgroundColor: 'rgba(99, 199, 255, 0.1)',
+              tension: 0.3,
+              fill: true
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'top'
+              }
+            },
+            scales: {
+              y: {
+                beginAtZero: true
+              }
+            }
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Chart initialization error:', error);
+    }
+  });
 </script>
 </body>
 </html>
